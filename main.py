@@ -6,11 +6,10 @@ from io import BytesIO
 from datetime import datetime, timedelta
 import pytz
 
-# 横幅を最大化
+# ページ幅を最大化するスタイル
 st.markdown(
     """
     <style>
-    /* 画面の余白を詰めて、全体の最大幅を解除 */
     .css-18e3th9, .block-container {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
@@ -18,7 +17,7 @@ st.markdown(
     }
     </style>
     """,
-    unsafe_allow_html=True,
+    unsafe_allow_html=True
 )
 
 # セッション状態の初期化
@@ -28,8 +27,6 @@ if "selected_key" not in st.session_state:
     st.session_state.selected_key = None
 if "current_text" not in st.session_state:
     st.session_state.current_text = None
-
-st.title("AWS S3 ログファイルビューア")
 
 # プロファイルとバケットの選択
 profile = st.text_input("AWSプロファイル名を入力", "default")
@@ -43,16 +40,26 @@ try:
 
     st.write(f"📁 現在のパス: `{st.session_state.prefix}`")
 
-    # 現在のプレフィックス配下を取得
-    def list_prefixes_and_objects(bucket, prefix):
-        result = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, Delimiter="/")
+    # フィルタUI（前方一致文字列 → S3 Prefixに使用）
+    name_filter = st.text_input("オブジェクト名の前方一致でフィルタ（S3取得時に適用）", "")
+    date_filter = st.date_input("JST日付でのフィルタ", value=None)
+    time_filter = st.time_input("JST時分での±10分フィルタ", value=None)
+
+    # オブジェクト一覧取得関数
+    def list_prefixes_and_objects(bucket, base_prefix, name_filter_prefix=""):
+        full_prefix = base_prefix + name_filter_prefix
+        result = s3.list_objects_v2(
+            Bucket=bucket,
+            Prefix=full_prefix,
+            Delimiter="/"
+        )
         folders = [cp["Prefix"] for cp in result.get("CommonPrefixes", [])]
         files = result.get("Contents", [])
         return folders, files
 
-    folders, files = list_prefixes_and_objects(bucket, st.session_state.prefix)
+    folders, files = list_prefixes_and_objects(bucket, st.session_state.prefix, name_filter)
 
-    # 「戻る」ボタン
+    # 戻るボタン
     if st.session_state.prefix:
         parent_prefix = "/".join(st.session_state.prefix.strip("/").split("/")[:-1])
         parent_prefix = parent_prefix + "/" if parent_prefix else ""
@@ -65,20 +72,14 @@ try:
     # サブフォルダ一覧
     st.subheader("📂 サブフォルダ")
     for folder in folders:
-        name = folder[len(st.session_state.prefix) :].rstrip("/")
+        name = folder[len(st.session_state.prefix):].rstrip("/")
         if st.button(f"➡ {name}", key=folder):
             st.session_state.prefix = folder
             st.session_state.current_text = None
             st.session_state.selected_key = None
             st.rerun()
 
-    # フィルタUI
-    st.subheader("🔍 ファイルフィルタ（任意）")
-    name_filter = st.text_input("オブジェクト名の前方一致でフィルタ", "")
-    date_filter = st.date_input("JST日付でのフィルタ", value=None)
-    time_filter = st.time_input("JST時分での±10分フィルタ", value=None)
-
-    # オブジェクトの絞り込み
+    # オブジェクトフィルタリング（表示用）
     st.subheader("📄 ファイル一覧")
     filtered_files = []
     for obj in files:
@@ -91,18 +92,14 @@ try:
         jst_dt = obj["LastModified"].astimezone(jst_tz)
         jst_date = jst_dt.date()
 
-        # ファイル名のみ抽出
-        filename = key[len(st.session_state.prefix) :]
+        # ファイル名（prefixより後ろ）
+        filename = key[len(st.session_state.prefix):]
 
-        # 名前フィルタ
-        if name_filter and not filename.startswith(name_filter):
-            continue
-
-        # 日付フィルタ
+        # JST日付でのフィルタ
         if date_filter and jst_date != date_filter:
             continue
 
-        # 時分フィルタ（±10分）
+        # JST時分±10分フィルタ
         if time_filter:
             target_dt = jst_tz.localize(datetime.combine(jst_date, time_filter))
             lower = target_dt - timedelta(minutes=10)
@@ -114,11 +111,7 @@ try:
 
     if filtered_files:
         keys = [f[2] for f in filtered_files]  # 表示名（ファイル名）
-        selected_idx = st.selectbox(
-            "表示したい .gz ファイルを選択",
-            range(len(keys)),
-            format_func=lambda i: keys[i],
-        )
+        selected_idx = st.selectbox("表示したい .gz ファイルを選択", range(len(keys)), format_func=lambda i: keys[i])
         selected_key = filtered_files[selected_idx][0]
 
         if selected_key != st.session_state.selected_key:
@@ -134,7 +127,7 @@ try:
     else:
         st.info("条件に一致するファイルが見つかりません。")
 
-    # 正規表現フィルタと表示
+    # 正規表現フィルタとログ表示
     if st.session_state.current_text:
         pattern = st.text_input("正規表現でフィルタ（例: Error|警告|\\tABC）", "")
         lines = st.session_state.current_text.splitlines()
@@ -156,7 +149,7 @@ try:
                 {log_text}
             </div>
             """,
-            unsafe_allow_html=True,
+            unsafe_allow_html=True
         )
 
 except Exception as e:
